@@ -1,0 +1,75 @@
+---
+#AmpliconPipeline.sh
+---
+
+## **Scope:** the code is writen in bash and attempt to connect different software that handle NGS data.
+
+## Requirements:
+* cutadapt: to trimm primers and adapters from the sequences from https://cutadapt.readthedocs.io/en/stable/#
+* revseq from emboss suite: handle primers and adapters from http://emboss.sourceforge.net/
+* Trimmomatic: Quality filtering and and sequencing trimming from http://www.usadellab.org/cms/?page=trimmomatic
+* Usearch suite: used in the process of Merging, dereplication and otu-like counts from https://www.drive5.com/usearch/
+* Vsearch suite: used in the process of Merging, dereplication and otu-like counts from https://github.com/torognes/vsearch
+
+## Brief description
+**input file:** Demultiplexed files are required in \*fastq.gz format.
+**Example:** i2_S11_L001_R1_001.fastq.gz and i2_S11_L001_R2_001.fastq.gz.
+**mapping file:** plain text file, comma separated values (CSV), in which 1st field: Forward read, 2nd field: Reverse read, 3rd field: name of the sample, 4th and 5th field: Fwd_primer and Rev_primer. Example: [i2_S10_L001_R1_001.fastq.gz,i1_S10_L001_R2_001.fastq.gz,i1,CATGGACAGCAAGACCGACT,ATCTGGTTGCCGAAGATGGG]
+1. Primer and adapter trimming, primer sequences (revcomp) are being removed fromthe original reads. by cutadapt
+2. Quality trimming by length or by a relation between Quality and length
+ 2.1. Trimming-by-length: This method removes the tail of the reads leaving high-quality reads with the same length. The user is allowed to decide the length of the trimm by side (Fwd, Rev). **FLAGS:** -l 1 -f int -r int  which designate the length of amplicon.
+ 2.2. Trimming-by-Quality: This method uses as Trimming parameters a combination between Quality on an Window size (default 4nt Quality: >=30 PHRED score), passing reads with a minimun length of 70nt. Those values can be set by the user with the **FLAGS:** -l 0 -q 4:30 -m 75.
+ * Note: 2.1 and 2.2 are mutually exclusive (both can not occur at the same time ), if -l 1 then -r -f values will have an effect. if -l 0 then -q -m will have effect.
+3. Merging (Fwd + Rev), Overlap: Paired reads that overlap can be merged or assembled by aligning the forward and reverse reads. This steep merged both ends in a PE mode. part of this mode includes the -i **FLAG** which stablish the similarity percentage is required at every mergin event, by default is set as 100 (100%). **FLAG** -p 1 -i 99, set by default.
+ 3.1. It is also possible to analyze the Forward read in a **Single end mode (SE)**, FLAG -p 0. This mode runs the forward read and REQUIRE a file named: ref_otu.fasta which is the reference amplicons in fasta format.
+4. Dereplication, this process removes identical sequences, leaving one copy of each unique sequence. This mainly reduce data size and cost of the downstream process.
+5. OTU-like table generation: After getting the unique sequences product of the derepliation process (previous one), an abundance table is generated per sample.
+6. Optional trimming of the OTU-like table, and abundance filtering is perform. OTU's with abundance lower than 0.0005% across the samples are being filtereded out.
+7. Cleaning intermediate files is also possible with the FLAG -c 1, by default is set on -c 0
+
+![AmpliconPipeline](/AmpliconPipeline.png)
+
+## HOW TO:
+**Example:** ./AmpliconPipeline.sh
+
+Help documentation for AmpliconPipeline.sh.
+Basic usage: AmpliconPipeline.sh [FLAGS] mapping_file
+
+Command line switches are optional. The following switches are recognized.
+-f  --Sets the value for option trimm_forward_read (int). Default is 250.
+-r  --Sets the value for option trimm_reverse_read (int). Default is 150.
+-i  --Sets the value for option percentageID_merge (int). Default is 100.
+-c  --Sets the value for option clean intermediate files (Bool). Default is 0.
+-l  --Sets the value for option initial trimming by Lenght(Bool)[byLenght=1, Quality(trimmomatic)=0]. Default is 1.
+-p  --Sets the value for option Analyse PE or SE (Bool)[PE=1 SE=0], if a PE=0 then a reference must be given as: ref_otu.fasta. Default is 1.
+-q  --Sets the value for option Trimm by Lenght(-l 0): WindowSize:Quality (string int:int). Default is 4:30.
+-m  --Sets the value for option Trimm by Lenght(-l 0): Min Size Amplicon (int). Default is 75.
+-h  --Displays this helpful message. No further functions are performed.
+
+Example: AmpliconPipeline.sh -f 200 -r 150 -i 98 -c 1 -l 1 mapping_file
+Example: AmpliconPipeline.sh -f 200 -r 150 -i 98 -p 0 mapping_file *in the folder a file named: ref_otu.fasta
+
+
+**Example:** Running PE analysis with Trimming by Lenght (fwd: 250, Rev:180): ./AmpliconPipeline.sh -f 250 -r 180 -p 1 mappingfile
+**Example:** Running SE analysis (4:20 and min lenght=80): ./AmpliconPipeline -p 0 -q 4:20 -m 80 mappingfile && file in runing dir: **ref_otu.fasta**
+**Example:** Running PE analysis with Trimming by Quality (1:30 and min length=150): ./AmpliconPipeline -l 0 -q 1:30 -m 150 mappingfile
+
+## output files:
+* all the runs by default keep the intermidiate files (-c 0).
+* ASV_vsearch_counts.txt: this file contains the final table with the amplicons. OTU-like table. VSEARCH-output
+* ASV_vsearch_counts_00005_trim.txt: file containing the same OTU-like table, filtered by abundance (0.0005%) VSEARCH-output
+* Stat.txt: Number of sequences per step of the pipeline.
+* otutab.txt: this file contains the final table with the amplicons. OTU-like table. U-SEARCH-output
+* otu_less_00005_trimmed_norm.txt: file containing the same OTU-like table, filtered by abundance (0.0005%) U-SEARCH-output
+* \*.merge.map: mapping file describing the merging process.
+* \*.merge_report: final report of the merging.
+* \*.uniq.fasta: Dereplication process per file. So uniq sequences.
+* all_cat_merged.fa: all sequence merged by Vsearch
+* unique_from_cat_seqs.fa: Derreplication of all samples by Vsearch
+* ASV_vsearch_counts.txt: OTU-like tab by Vsearch.
+
+Variant name | Sample1 | Sample N
+-------------|---------|----------
+Var1 | int | int
+Var n | int | int |
+

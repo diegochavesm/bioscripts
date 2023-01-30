@@ -1,0 +1,195 @@
+#!/bin/bash
+##Analysis nanopore piepline
+
+## hot to run
+## basecalling, pycoQC, PolyA and alignments are set as default, to switch them off, use -b 0 and -p 0
+## -->  bash ./nanoporepipe.sh -f ./fast5 -d test01 -r R4032_hepta.fa
+## if the Base calling is going to be skipped then the fastq files and the sequencing summary files must be given with the option -s for summary and -q for the fastaq folder
+## --> bash ./nanoporepipe.sh -f ./fast5 -d test01 -r R4032_hepta.fa -s sequencing_summary.txt -f fastq_pass -b 0
+##
+
+#Software
+BASECALL=/home/bioinf/software/ont-guppy-cpu/bin/guppy_basecaller
+MINIMAP=/home/bioinf/software/minimap2/minimap2
+PICARD=/home/bioinf/software/picard.jar
+NANOPOLISH=/home/bioinf/software/nanopolish/nanopolish
+DOBASCALL=1
+POLYA=1
+FASTAQ=fastq_pass
+QUAL=0
+LEN=0
+DMUX=0
+REP=1
+
+# set fonts for help ##
+NORM=`tput sgr0`
+BOLD=`tput bold`
+REV=`tput smso`
+
+
+function HELP {
+        echo -e \\n"Help documentation for ${BOLD}${SCRIPT}NANOPORE Quantification Pipeline${NORM}"\\n
+        echo -e "${REV}Basic usage: bash nanoporepipe.sh -f fast5 -r reference.fasta -d out_dir ${NORM} ${BOLD}$SCRIPT [FLAGS]${NORM}"\\n
+        echo "Command line switches are optional. The following switches are recognized."
+        echo "${REV}-b${NORM}  --Sets the value for option ${BOLD}Perform BaseCalling [guppy basecaller], 1=BaseCall 0=No base call, if it run with -b 0, then must be given the fastq_dir (-q) and the sequence summary (-s). Default is ${BOLD}$DOBASCALL${NORM}."
+        echo "${REV}-r${NORM}  --Sets the value for option ${BOLD}Fasta with the reference (Multifastas)${NORM}${BOLD}${NORM}."
+        echo "${REV}-p${NORM}  --Sets the value for option ${BOLD}Perform the PolyA Quantification${NORM}. Default is ${BOLD}$POLYA${NORM}."
+        exit 1
+}
+
+#Check the number of arguments. If none are passed, print help and exit.
+NUMARGS=$#
+echo -e \\n"Number of arguments: $NUMARGS"
+if [ $NUMARGS -eq 0 ]; then
+  HELP
+fi
+
+while getopts b:f:d:r:p:q:s:l:k:x:t: option
+do
+case "${option}"
+in
+b)DOBASCALL=${OPTARG};;
+f)FAST5=${OPTARG};;
+q)FASTQ=${OPTARG};;
+s)SEQSUM=${OPTARG};;
+d)OUT=${OPTARG};;
+r)REF=${OPTARG};;
+p)POLYA=${OPTARG};;
+l)LEN=${OPTARG};;
+k)QUAL=${OPTARG};;
+x)DMUX=${OPTARG};;
+t)REP=${OPTARG};;
+esac
+done
+
+#basecalling & mapping
+if [ $DOBASCALL -eq 1 ]
+then
+        echo "Running Base calling.... this might take some time"
+        $BASECALL -i $FAST5 --config "/home/bioinf/software/ont-guppy-cpu/data/rna_r9.4.1_70bps_hac.cfg"  --save_path $OUT --recursive --fast5_out --hp_correct 1 --disable_pings 1 --enable_trimming 0 --cpu_threads_per_caller 10 --num_callers 5
+else
+        echo "Basecall skipped and woking with FASTQ files and summary file"
+        mkdir $OUT
+        mkdir $OUT/workspace
+        mkdir $OUT/results
+        ln -s $PWD/$FAST5/*.fast5 $OUT/workspace/
+        ln -s $PWD/$FASTQ/*.fastq $OUT/
+        cp $SEQSUM $OUT/sequencing_summary.txt
+fi
+
+echo "Basecall done or skipped, now mapping with minimap2"
+mkdir $OUT/fastaq
+
+#Maping
+
+if [ $DMUX -eq 1 ]
+        then
+        echo -e "library(ggplot2)\nlibrary(reshape)\nlibrary(tidyverse)" >> Rscript_count
+        ln -s $PWD/$FASTQ/*.fastq $OUT/fastaq
+         for fastqf in $(ls $OUT/fastaq/)
+         do
+                name=$(echo $fastqf | cut -d'.' -f1)
+                NanoFilt -q $QUAL -l $LEN $OUT/fastaq/$fastqf > $OUT/fastaq/$name.trimmed.fastq
+                $MINIMAP -a -a -x map-ont -t 40 $REF $OUT/fastaq/$name.trimmed.fastq | samtools view -b - -o $OUT/$name.Aln.bam
+                samtools sort $OUT/$name.Aln.bam > $OUT/$name.Aln.sort.bam
+                samtools index $OUT/$name.Aln.sort.bam
+                samtools depth -d 0 $OUT/$name.Aln.sort.bam > $OUT/$name.Aln.depth
+                samtools view $OUT/$name.Aln.sort.bam | awk '{print $3}' | uniq -c > $OUT/$name.Alnreadcounts.txt
+                echo -e "$name<-read.table(\"$OUT/$name.Alnreadcounts.txt\")\ncolnames($name)<-c(\"$name\",\"Molecule\")" >> Rscript_count
+                echo -e "$name.depth <- read.table(\"$OUT/$name.Aln.depth\")\n$name.depth\$bc<-\"$name\"" >> Rscript_count
+        done
+        echo -e "tab<-left_join(bc_1, bc_2, \"Molecule\") %>% left_join(bc_3, \"Molecule\") %>% left_join(bc_4, \"Molecule\") %>% left_join(unknown, \"Molecule\")%>% select(Molecule, bc_1, bc_2, bc_3, bc_4, unknown)" >> Rscript_count
+        echo -e "pdf(\"Nreads_mapped.pdf\",width=10,height=4)\nggplot(melt(tab), aes(fill=Molecule, y=value, x=variable)) + geom_bar(position=\"dodge\", stat=\"identity\") + facet_wrap(.~variable, scales=\"free\", ncol=5) + scale_color_brewer(palette = \"Paired\") + ylab(\"N. reads mapped\") + xlab(\"Conditions\") + labs(fill = \"References\") + theme_bw()\ndev.off()\n" >> Rscript_count
+        echo -e "alldepth<-rbind(bc_1.depth, bc_2.depth, bc_3.depth, bc_4.depth, unknown.depth)" >> Rscript_count
+        echo -e "pdf(\"CoveragePlots.pdf\",width=12,height=16)\nggplot(data=alldepth, aes(x=V2, y=V3, color=V1)) + geom_point(size=0.1) + facet_wrap(bc~., scales=\"free\", ncol=1) + xlab(\"Reference Lenght\") + ylab(\"N. Reads mapped\") + theme_bw() + labs(color = \"References\") + ggtitle(\"Coverage plot $OUT\")\ndev.off()\n" >> Rscript_count
+
+        else
+        cat $OUT/*.fastq > $OUT/fastaq/allcat.fastq
+        NanoFilt -q $QUAL -l $LEN $OUT/fastaq/allcat.fastq > $OUT/fastaq/allcat.trimmed.fastq
+        $MINIMAP -a -a -x map-ont -t 40 $REF $OUT/fastaq/allcat.trimmed.fastq | samtools view -b - -o $OUT/Aln.bam
+        samtools sort $OUT/Aln.bam > $OUT/Aln.sort.bam
+        samtools index $OUT/Aln.sort.bam
+        #java -jar $PICARD CollectWgsMetrics I=$OUT/Aln.sort.bam R=$REF O=$OUT/Aln.metrics
+        samtools depth -d 0 $OUT/Aln.sort.bam > $OUT/Aln.depth
+        samtools view $OUT/Aln.sort.bam | awk '{print $3}' | uniq -c > $OUT/Alnreadcounts.txt
+        #variant calling
+        #samtools faidx $REF
+        #samtools mpileup -uf $REF $OUT/Aln.sort.bam | bcftools call -mv -Ob -o $OUT/results/calls.bcf
+        #bcftools view -i '%QUAL>=20' $OUT/results/calls.bcf > $OUT/results/calls_Q20.vcf
+        #consensus seq
+        #samtools mpileup -uf $REF $OUT/Aln.sort.bam | bcftools call -c | vcfutils.pl vcf2fq > $OUT/results/cns.fq
+        #samtools mpileup -uf $REF $OUT/Aln.sort.bam | bcftools call -mv -Oz -o $OUT/results/calls.vcf.gz
+        #bcftools index $OUT/results/calls.vcf.gz
+        #cat $REF | bcftools consensus $OUT/results/calls.vcf.gz > $OUT/results/consensus.fa
+
+echo -e "library(ggplot2)\nlibrary(reshape)\nnreads <- read.table(\"$OUT/Alnreadcounts.txt\")\nref_melt <- melt(nreads, id=\"V2\")\npdf(\"Nreads_mapped.pdf\",width=3,height=3)\nggplot(ref_melt, aes(fill=V2, y=value, x=variable)) + geom_bar(position=\"dodge\", stat=\"identity\") + scale_color_brewer(palette = \"Paired\") + ylab(\"N. reads mapped\") + xlab(\"Conditions\") + labs(fill = \"References\") + theme_bw()\ndev.off()\n" > Rscript_count
+
+echo -e "aln <- read.table(\"$OUT/Aln.depth\")\npdf(\"CoveragePlots.pdf\",width=6,height=8)\nggplot(data=aln, aes(x=V2, y=V3, color=V1)) + geom_point(size=0.4) + facet_wrap(.~V1, scales=\"free\", ncol=2) + xlab(\"Reference Lenght\") + ylab(\"N. Reads mapped\") + theme_bw() + labs(color = \"References\") + ggtitle(\"Coverage plot $OUT\")\ndev.off()\n" >> Rscript_count
+
+fi
+
+Rscript Rscript_count
+mv CoveragePlots.pdf $OUT/results/CoveragePlots_$OUT.pdf
+mv Nreads_mapped.pdf $OUT/results/Nreads_mapped_$OUT.pdf
+mv Rscript_count $OUT/results/
+
+
+##pycoQC
+if [ $REP -eq 1 ]
+then
+source `which virtualenvwrapper.sh`
+workon pycoQC
+        if [ $DMUX -eq 1 ]
+        #if(( $DMUX == 1 ))
+        then
+                for fastqf in $(ls $OUT/*.fastq | awk 'BEGIN{FS="/"}{print $NF}')
+                do
+                name=$(echo $fastqf | cut -d'.' -f1)
+                echo "working with the file $name \n"
+                pycoQC -f $OUT/sequencing_summary.txt -o $OUT/results/pycoQC_$name.$OUT.html --min_pass_len 10 --bam_file $OUT/$name.Aln.sort.bam
+                done
+        else
+        pycoQC -f $OUT/sequencing_summary.txt -o $OUT/results/pycoQC_$OUT.html --min_pass_len 10 --bam_file $OUT/Aln.sort.bam
+        fi
+deactivate pycoQC
+fi
+
+#PolyA with nanopolish
+if [ $POLYA -eq 1 ]
+then
+        export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/usr/local/lib64:/usr/lib64
+        echo "PolyA Quantification ...."
+
+        if (( $DMUX == 1 ))
+                then
+                echo "Demultiplexing the poliA +++++++++++++++++++\n"
+                for fastqf in $(ls $OUT/fastaq/*.trimmed.fastq | awk 'BEGIN{FS="/"}{print $NF}')
+
+                        do
+                        echo -e "File: $fastqf \n"
+                        name=$(echo $fastqf | cut -d'.' -f1)
+                        echo "working with the file $name \n"
+                        $NANOPOLISH index --directory=$OUT/workspace/ --sequencing-summary=$OUT/sequencing_summary.txt $OUT/fastaq/$name.trimmed.fastq
+                        $NANOPOLISH polya --threads=8 --reads=$OUT/fastaq/$name.trimmed.fastq --bam=$OUT/$name.Aln.sort.bam --genome=$REF  > $OUT/$name.polya_results.tsv
+                        echo -e "$name.bc <- read.table(\"$OUT/$name.polya_results.tsv\", header=T)\n$name.bc\$bc<-\"$name\"" >> Rscript
+                        done
+
+                        echo -e "polyA<-rbind(bc_1.bc, bc_2.bc, bc_3.bc, bc_4.bc, unknown.bc)" >> Rscript
+                        echo -e "library(tidyverse)\nlibrary(ggplot2)\npdf(\"PoliA_all.pdf\",width=12,height=8)\nggplot(polyA %>% filter(qc_tag == \"PASS\"), aes(polya_length, color = contig)) + geom_freqpoly(alpha = 1, aes(y = ..count..), position='identity', bins=100) + xlab(\"polyA lenght\") + ylab(\"Number or reads\") + scale_x_continuous(breaks = seq(0, 130, 10), lim = c(0, 130))+ facet_wrap(.~bc, scales=\"free\") + theme_bw()\ndev.off()\n" >> Rscript
+                        echo -e "pdf(\"PoliA_facet_all.pdf\",width=15,height=12)\nggplot(polyA %>% filter(qc_tag == \"PASS\"), aes(polya_length, fill = contig)) + geom_histogram(alpha = 0.5, aes(y = ..count..), position='identity', bins=100) + facet_wrap(contig~bc, scales=\"free\") + xlab(\"polyA lenght\") + ylab(\"Number or reads\") + scale_x_continuous(breaks = seq(0, 130, 10), lim = c(0, 130)) + theme_bw()\ndev.off()\n" >> Rscript
+        fi
+        if (( $DMUX == 0 ))
+                then
+                echo "NO Demultipleing PolyA prediction ========[ <------> ]\n"
+                $NANOPOLISH index --directory=$OUT/workspace/ --sequencing-summary=$OUT/sequencing_summary.txt $OUT/fastaq/allcat.trimmed.fastq
+                $NANOPOLISH polya --threads=8 --reads=$OUT/fastaq/allcat.trimmed.fastq --bam=$OUT/Aln.sort.bam --genome=$REF  > $OUT/polya_results.tsv
+                echo -e "library(tidyverse)\nlibrary(ggplot2)\npolyA <- read.table(\"$OUT/polya_results.tsv\", header=T)\npdf(\"PoliA_all.pdf\",width=6,height=8)\nggplot(polyA %>% filter(qc_tag == \"PASS\"), aes(polya_length, fill = contig)) + geom_histogram(alpha = 0.5, aes(y = ..count..), position='identity', bins=100) + xlab(\"polyA lenght\") + ylab(\"Number or reads\") + scale_x_continuous(breaks = seq(0, 100, 10), lim = c(0, 100)) + theme_bw()\ndev.off()\n" >> Rscript
+                echo -e "pdf(\"PoliA_facet_all.pdf\",width=6,height=8)\nggplot(polyA %>% filter(qc_tag == \"PASS\"), aes(polya_length, fill = contig)) + geom_histogram(alpha = 0.5, aes(y = ..count..), position='identity', bins=100) + facet_wrap(.~contig) + xlab(\"polyA lenght\") + ylab(\"Number or reads\") + scale_x_continuous(breaks = seq(0, 100, 10), lim = c(0, 100)) + theme_bw()\ndev.off()\n" >> Rscript
+        fi
+
+        Rscript Rscript
+        mv PoliA_facet_all.pdf $OUT/results/PoliA_facet_all_$OUT.pdf
+        mv PoliA_all.pdf $OUT/results/PoliA_all_$OUT.pdf
+        mv Rscript $OUT/results/
+
+fi
